@@ -5,9 +5,8 @@
 import os
 import torch
 from torchvision import transforms
-from typing import Optional
 from ultralytics.nn.tasks import DetectionModel
-
+from typing import Optional
 from test.utils import download_model
 from third_party.tt_forge_models.tools.utils import get_file
 
@@ -23,7 +22,9 @@ class YoloWrapper(torch.nn.Module):
 
     def forward(self, image: torch.Tensor):
         y, x = self.model(image)
-        return (y, *x)
+        # Post processing inside model casts output to float32, even though raw output is aligned with image.dtype
+        # Therefore we need to cast it back to image.dtype
+        return (y.to(image.dtype), *x)
 
 
 def _create_image_input() -> torch.Tensor:
