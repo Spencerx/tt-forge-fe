@@ -232,21 +232,13 @@ def _add_so_dependencies(install_dir: Path) -> None:
                 print(f"Copying dependency {dep} to {dest_path}...")
                 shutil.copy2(dep, dest_path)
                 # adjust_rpath(dest_path, "$ORIGIN/../lib:$ORIGIN")
-                copied_libs.add(dep)
+                copied_libs.add(dest_path)
+                adjust_rpath(str(dest_path), "$ORIGIN:$ORIGIN/../lib")
         else:
             print(f"Skipping standard/our library dependency: {dep}")
 
     print(f"Copied dependencies {len(copied_libs)}:")
     print(copied_libs)
-
-    # # After copying all dependencies, adjust rpath of original .so files
-    # for so_file in install_dir.rglob("*.so*"):
-    #     if so_file.is_symlink() or not so_file.is_file():
-    #         continue
-
-    #     # Adjust rpath to look in $ORIGIN/../lib first
-    #     # This ensures it finds our bundled dependencies
-    #     adjust_rpath(str(so_file), "$ORIGIN:$ORIGIN/../lib")
 
 
 with open("README.md", "r") as f:
