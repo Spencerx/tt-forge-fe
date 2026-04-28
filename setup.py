@@ -112,7 +112,18 @@ def _prune_bloat_from_wheel(install_dir: str) -> None:
     _remove_bloat_dir(install_dir / "lib" / "pkgconfig")
     _remove_bloat_dir(install_dir / "include")
     _remove_bloat_dir(install_dir / "tt-metal" / ".cpmcache")
+    _fix_file(install_dir / "lib" / "libtt-umd.so.0", install_dir)
+    _remove_bloat_file(install_dir / "lib" / "libtt-umd.so")
+    _remove_bloat_file(install_dir / "lib" / "libtt-umd.so.0.*")
     _strip_shared_objects(install_dir)
+
+
+def _fix_file(file_path: Path, install_dir: Path) -> None:
+    if file_path.is_symlink():
+        target = file_path.resolve()
+        file_path.unlink()
+        shutil.copy2(target, file_path)
+    adjust_rpath(file_path, "$ORIGIN:$ORIGIN/lib", install_dir)
 
 
 def _remove_broken_symlinks(root: Path) -> None:
@@ -157,6 +168,36 @@ def _remove_bloat_dir(dir_path: Path) -> None:
         shutil.rmtree(dir_path)
 
 
+def _remove_bloat_file(file_path: Path) -> None:
+    # Handle wildcard patterns
+    if "*" in file_path.as_posix():
+        parent = file_path.parent
+        pattern = file_path.name
+        for matched_file in parent.glob(pattern):
+            if matched_file.is_file():
+                print(f"Removing bloat file: {matched_file}")
+                matched_file.unlink()
+    else:
+        if file_path.exists() and file_path.is_file():
+            print(f"Removing bloat file: {file_path}")
+            file_path.unlink()
+
+
+def adjust_rpath(so_file: str, new_rpath: str, install_dir: Path) -> None:
+    """Adjust rpath of a .so file using patchelf."""
+    patchelf_path = shutil.which("patchelf")
+    if patchelf_path is None:
+        print("patchelf not found; skipping rpath adjustment")
+        return
+
+    try:
+        subprocess.run([patchelf_path, "--set-rpath", new_rpath, so_file], check=True)
+        rel = Path(so_file).relative_to(install_dir)
+        print(f"Adjusted rpath: {rel}")
+    except subprocess.CalledProcessError as exc:
+        raise RuntimeError(f"Failed to adjust rpath for {so_file}: {exc}")
+
+
 def _add_so_dependencies(install_dir: Path) -> None:
     """Copy non-standard .so dependencies into install_dir/lib and adjust rpath."""
 
@@ -198,47 +239,55 @@ def _add_so_dependencies(install_dir: Path) -> None:
             print(f"{so_path} is NOT a standard library.")
         return False
 
-    def adjust_rpath(so_file: str, new_rpath: str) -> None:
-        """Adjust rpath of a .so file using patchelf."""
-        patchelf_path = shutil.which("patchelf")
-        if patchelf_path is None:
-            print("patchelf not found; skipping rpath adjustment")
-            return
+    def collect_libs(lib_dir: Path) -> set[str]:
+        all_libs = set()
+        for so_file in install_dir.rglob("*.so*"):
+            if so_file.is_symlink() or not so_file.is_file():
+                continue
 
-        try:
-            subprocess.run([patchelf_path, "--set-rpath", new_rpath, so_file], check=True)
-            rel = Path(so_file).relative_to(install_dir)
-            print(f"Adjusted rpath: {rel}")
-        except subprocess.CalledProcessError as exc:
-            raise RuntimeError(f"Failed to adjust rpath for {so_file}: {exc}")
+            all_libs.update(get_so_dependencies(str(so_file)))
 
-    lib_dir = install_dir / "lib"
-    all_libs = set()
-    copied_libs = set()
-    for so_file in install_dir.rglob("*.so*"):
-        if so_file.is_symlink() or not so_file.is_file():
-            continue
+        print(f"Total dependencies found: {len(all_libs)}")
+        print(all_libs)
+        return all_libs
 
-        all_libs.update(get_so_dependencies(str(so_file)))
+    def copy_libs(lib_dir: Path, all_libs: Set[str]) -> None:
+        copied_libs = set()
+        for dep in all_libs:
+            dep_path = Path(dep).resolve()
+            if dep_path.parts[:-1] != install_dir.parts and not is_standard_library(dep):
+                dep_path = Path(dep)
+                dest_path = lib_dir / dep_path.name
+                if not dest_path.exists():
+                    print(f"Copying dependency {dep} to {dest_path}...")
+                    shutil.copy2(dep, dest_path)
+                    # adjust_rpath(dest_path, "$ORIGIN/../lib:$ORIGIN")
+                    copied_libs.add(dest_path)
+                    adjust_rpath(str(dest_path), "$ORIGIN:$ORIGIN/lib", install_dir)
+            else:
+                print(f"Skipping standard/our library dependency: {dep}")
 
-    print(f"Total dependencies found: {len(all_libs)}")
-    print(all_libs)
-    for dep in all_libs:
-        dep_path = Path(dep).resolve()
-        if dep_path.parts[:-1] != install_dir.parts and not is_standard_library(dep):
-            dep_path = Path(dep)
-            dest_path = lib_dir / dep_path.name
-            if not dest_path.exists():
-                print(f"Copying dependency {dep} to {dest_path}...")
-                shutil.copy2(dep, dest_path)
-                # adjust_rpath(dest_path, "$ORIGIN/../lib:$ORIGIN")
-                copied_libs.add(dest_path)
-                adjust_rpath(str(dest_path), "$ORIGIN:$ORIGIN/../lib")
-        else:
-            print(f"Skipping standard/our library dependency: {dep}")
+        print(f"Copied dependencies {len(copied_libs)}:")
+        print(copied_libs)
 
-    print(f"Copied dependencies {len(copied_libs)}:")
-    print(copied_libs)
+    def get_full_paths(lib_names: Set[str]) -> Set[str]:
+        """Convert library names to their full paths using ldconfig or system search."""
+        full_paths = set()
+        output = subprocess.check_output(["ldconfig", "-p"], text=True)
+        for lib_name in lib_names:
+            for line in output.splitlines():
+                if lib_name in line:
+                    parts = line.split("=>")
+                    if len(parts) > 1:
+                        path = parts[1].strip()
+                        if path:
+                            full_paths.add(path)
+                            break
+        return full_paths
+
+    alllibs = collect_libs(install_dir)
+    alllibs.update(collect_libs(install_dir / "lib"))
+    copy_libs(install_dir / "lib", alllibs)
 
 
 with open("README.md", "r") as f:
