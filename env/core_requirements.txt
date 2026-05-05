@@ -1,4 +1,7 @@
 setuptools>=61
+# grpcio-tools>=1.60.0 avoids building 1.48.2 from source on Python 3.12 (no cp312 wheel exists for 1.48.2)
+# orbax-checkpoint pulls grpcio-tools with no version constraint, so uv resolves to the oldest version otherwise
+grpcio-tools>=1.60.0
 # This is needed to avoid issue https://yyz-gitlab.local.tenstorrent.com/devops/devops/-/issues/95
 # jax requires any version of optax which requires any version of chex which in turn
 # requires jax>=0.4.6 which conflicts with our jax == 0.3.16
@@ -25,7 +28,7 @@ pyinstrument>=4.1.1
 scipy>=1.8.0
 tensorflow==2.19.0
 tensorboard==2.19.0
-tf2onnx==1.15.1
+tf2onnx==1.17.0
 transformers==4.52.4
 # To avoid warning during the import
 requests==2.28.2
@@ -33,6 +36,9 @@ tflite==2.10.0
 ultralytics==8.3.91
 paddlepaddle==2.6.2
 paddlenlp==2.8.1
+# paddle2onnx>=2.1.0 marks onnxoptimizer as python_version < "3.12" so it is
+# not pulled in on Python 3.12, avoiding a source build that fails with newer CMake
+paddle2onnx==2.1.0
 aistudio-sdk==0.2.6
 pytorch_forecasting
 patool
